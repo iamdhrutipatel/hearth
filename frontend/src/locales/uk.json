@@ -64,7 +64,7 @@
     "timezoneHint": "Календар, за яким цей workspace веде облік. Баланси, бюджети та строки оплати змінюються там опівночі."
   },
   "app": {
-    "name": "Lovenest",
+    "name": "Hearth",
     "versionAriaLabel": "Запущено версію {{version}}",
     "versionLabel": "Версія {{version}}",
     "updateAvailable": "Доступне оновлення",
@@ -2547,7 +2547,7 @@
     "show": "Показати суми"
   },
   "setup": {
-    "title": "Ласкаво просимо до Lovenest",
+    "title": "Ласкаво просимо до Hearth",
     "description": "Створіть обліковий запис адміністратора, щоб почати.",
     "confirmPassword": "Підтвердьте пароль",
     "createAdmin": "Створити обліковий запис адміністратора",

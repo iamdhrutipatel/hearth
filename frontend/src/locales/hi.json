@@ -64,7 +64,7 @@
     "timezoneHint": "वह कैलेंडर जिसमें यह वर्कस्पेस अपने खाते रखता है। शेष राशि, बजट और देय तिथियाँ वहाँ आधी रात को बदलती हैं।"
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "वर्शन {{version}} चल रहा है",
     "versionLabel": "वर्शन {{version}}",
     "updateAvailable": "अपडेट उपलब्ध",
@@ -2261,7 +2261,7 @@
     "show": "मान दिखाएँ"
   },
   "setup": {
-    "title": "Securo में आपका स्वागत है",
+    "title": "Hearth में आपका स्वागत है",
     "description": "शुरू करने के लिए अपना व्यवस्थापक खाता बनाएँ।",
     "confirmPassword": "पासवर्ड की पुष्टि करें",
     "createAdmin": "व्यवस्थापक खाता बनाएँ",

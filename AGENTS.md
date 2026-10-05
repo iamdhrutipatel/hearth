@@ -1,3 +1,5 @@
+> **hearth fork:** read [HEARTH.md](HEARTH.md) first. It overrides this file where they differ, including the branches, PR and sync flows, checks and GitNexus sections.
+
 # Agent instructions for ADolkun/lovenest
 
 Downstream product fork of `securo-finance/securo`. Keep this workflow intact.

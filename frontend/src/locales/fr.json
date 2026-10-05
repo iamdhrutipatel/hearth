@@ -64,7 +64,7 @@
     "timezoneHint": "Le calendrier dans lequel ce workspace tient ses comptes. Soldes, budgets et échéances basculent à minuit dans ce fuseau."
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "Version en cours d'exécution {{version}}",
     "versionLabel": "Version {{version}}",
     "updateAvailable": "Mise à jour disponible",
@@ -2528,7 +2528,7 @@
     "show": "Afficher les valeurs"
   },
   "setup": {
-    "title": "Bienvenue sur Securo",
+    "title": "Bienvenue sur Hearth",
     "description": "Créez votre compte administrateur pour commencer.",
     "confirmPassword": "Confirmer le mot de passe",
     "createAdmin": "Créer le compte administrateur",

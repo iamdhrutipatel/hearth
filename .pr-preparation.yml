@@ -1,0 +1,59 @@
+# Project settings for the pr-preparation skill.
+# The skill reads this file from the committed HEAD, so edits take effect only
+# after they are merged into `hearth`. It configures the skill and cannot grant
+# it extra permissions.
+
+# No `ticket` key: titles take an optional scope, e.g. `fix(dashboard): ...`.
+
+# Branches the skill never commits or pushes to directly. Changes reach them
+# only through a merged PR (`hearth`) or a fast-forward from their source
+# (`main` from Securo, `lovenest` from ADolkun/lovenest).
+protected_branches: ['hearth', 'main', 'lovenest']
+
+# PR description template for PRs into this fork. `generic` uses the skill's
+# built-in sections instead of .github/PULL_REQUEST_TEMPLATE.md, whose
+# checklist is written for PRs into ADolkun/lovenest.
+template: 'generic'
+
+# Targets for `--upstream <name>`. A PR to an upstream is opened from a branch
+# based on `base`, which is fetched from `remote`. The PR is refused if any
+# commit reachable from a `foreign_refs` entry would be included.
+upstreams:
+  securo:
+    repo: 'securo-finance/securo'
+    base: 'main'
+    remote: 'upstream'
+    foreign_refs: ['origin/hearth', 'adolkun/lovenest']
+    template: 'repository'
+  lovenest:
+    repo: 'ADolkun/lovenest'
+    base: 'lovenest'
+    remote: 'adolkun'
+    foreign_refs: ['origin/hearth']
+    template: 'repository'
+
+# Run during `--create-pr` when a changed file matches the glob. Each command
+# runs from the repository root and mirrors a step in
+# .github/workflows/lovenest-ci.yml. Backend pytest is CI-only: it needs the
+# Postgres and Redis services the workflow starts.
+checks:
+  'backend/**': '(cd backend && uv run ruff check . && uv run ty check . && uv run python scripts/check_migration_chain.py)'
+  'extras/tax/**': '(cd extras/tax && uv run python -m unittest discover -v)'
+  'frontend/**': '(cd frontend && npm ci && npm run lint -- --max-warnings=0 && npm run build && npm test)'
+  'docker-compose*.yml': 'docker compose -f docker-compose.prod.yml config --quiet'
+
+# Commands the skill never runs. The live app runs from this folder under the
+# Compose project `securo`, so these would restart it or change its database.
+never_run:
+  - 'docker compose up'
+  - 'docker compose build'
+  - 'docker compose down'
+  - 'docker compose restart'
+  - 'docker compose stop'
+  - 'alembic upgrade'
+  - 'alembic downgrade'
+
+# Data the skill must never read or put into a commit, PR title or description.
+privacy: >-
+  Never read .env values, the live database, or ~/hearth-backups. Never publish
+  personal finance data; mask any account number as XXXX.
