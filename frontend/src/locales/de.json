@@ -64,7 +64,7 @@
     "timezoneHint": "Der Kalender, in dem dieser Workspace seine Bücher führt. Salden, Budgets und Fälligkeiten wechseln dort um Mitternacht."
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "Läuft mit Version {{version}}",
     "versionLabel": "Version {{version}}",
     "updateAvailable": "Update verfügbar",
@@ -2525,7 +2525,7 @@
     "show": "Werte anzeigen"
   },
   "setup": {
-    "title": "Willkommen bei Securo",
+    "title": "Willkommen bei Hearth",
     "description": "Erstelle dein Administrator-Konto, um zu beginnen.",
     "confirmPassword": "Passwort bestätigen",
     "createAdmin": "Administrator-Konto erstellen",

@@ -64,7 +64,7 @@
     "timezoneHint": "O calendário em que este workspace mantém as contas. Saldos, orçamentos e vencimentos mudam à meia-noite nesse fuso."
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "Versão em execução {{version}}",
     "versionLabel": "Versão {{version}}",
     "updateAvailable": "Atualização disponível",
@@ -2528,7 +2528,7 @@
     "show": "Mostrar valores"
   },
   "setup": {
-    "title": "Bem-vindo ao Securo",
+    "title": "Bem-vindo ao Hearth",
     "description": "Cria a tua conta de administrador para começar.",
     "confirmPassword": "Confirmar palavra-passe",
     "createAdmin": "Criar Conta Admin",

@@ -64,7 +64,7 @@
     "timezoneHint": "The calendar this workspace keeps its books in. Balances, budgets and due dates turn over at midnight there."
   },
   "app": {
-    "name": "Lovenest",
+    "name": "Hearth",
     "versionAriaLabel": "Running version {{version}}",
     "versionLabel": "Version {{version}}",
     "updateAvailable": "Update Available",
@@ -2700,7 +2700,7 @@
     "show": "Show values"
   },
   "setup": {
-    "title": "Welcome to Lovenest",
+    "title": "Welcome to Hearth",
     "description": "Create your admin account to get started.",
     "confirmPassword": "Confirm password",
     "createAdmin": "Create Admin Account",

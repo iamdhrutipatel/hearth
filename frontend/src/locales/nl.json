@@ -64,7 +64,7 @@
     "timezoneHint": "De kalender waarin deze workspace zijn boeken bijhoudt. Saldi, budgetten en vervaldata wisselen daar om middernacht."
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "Lopende versie {{version}}",
     "versionLabel": "Versie {{version}}",
     "updateAvailable": "Update beschikbaar",
@@ -2526,7 +2526,7 @@
     "show": "Toon waarden"
   },
   "setup": {
-    "title": "Welkom bij Securo",
+    "title": "Welkom bij Hearth",
     "description": "Maak uw beheerdersaccount aan om aan de slag te gaan.",
     "confirmPassword": "Bevestig wachtwoord",
     "createAdmin": "Maak een beheerdersaccount aan",

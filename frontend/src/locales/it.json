@@ -64,7 +64,7 @@
     "timezoneHint": "Il calendario in cui questo workspace tiene i conti. Saldi, budget e scadenze cambiano a mezzanotte in quel fuso."
   },
   "app": {
-    "name": "Lovenest",
+    "name": "Hearth",
     "versionAriaLabel": "Versione in esecuzione {{version}}",
     "versionLabel": "Versione {{version}}",
     "updateAvailable": "Aggiornamento disponibile",
@@ -2528,7 +2528,7 @@
     "show": "Mostra valori"
   },
   "setup": {
-    "title": "Benvenuto in Lovenest",
+    "title": "Benvenuto in Hearth",
     "description": "Crea il tuo account amministratore per iniziare.",
     "confirmPassword": "Conferma password",
     "createAdmin": "Crea account amministratore",

@@ -64,7 +64,7 @@
     "timezoneHint": "Kalendár, v ktorom tento workspace vedie účty. Zostatky, rozpočty a splatnosti sa tam menia o polnoci."
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "Spustená verzia {{version}}",
     "versionLabel": "Verzia {{version}}",
     "updateAvailable": "Dostupná aktualizácia",
@@ -2432,7 +2432,7 @@
     "show": "Zobraziť hodnoty"
   },
   "setup": {
-    "title": "Vitaj v Securo",
+    "title": "Vitaj v Hearth",
     "description": "Začni vytvorením účtu administrátora.",
     "confirmPassword": "Potvrď heslo",
     "createAdmin": "Vytvoriť účet administrátora",

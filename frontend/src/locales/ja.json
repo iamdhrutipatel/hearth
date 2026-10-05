@@ -64,7 +64,7 @@
     "timezoneHint": "このワークスペースが帳簿を管理するカレンダーです。残高、予算、支払期日はこのタイムゾーンの深夜に切り替わります。"
   },
   "app": {
-    "name": "Securo",
+    "name": "Hearth",
     "versionAriaLabel": "実行中のバージョン: {{version}}",
     "versionLabel": "バージョン {{version}}",
     "updateAvailable": "更新があります",
@@ -2296,7 +2296,7 @@
     "show": "金額を表示"
   },
   "setup": {
-    "title": "Securoへようこそ",
+    "title": "Hearthへようこそ",
     "description": "管理者アカウントを作成して始めましょう。",
     "confirmPassword": "パスワード(確認)",
     "createAdmin": "管理者アカウントを作成",
