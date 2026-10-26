@@ -405,6 +405,9 @@ export default function DashboardPage() {
   const availableBalance = availableBalanceAccounts.reduce(
     (sum, a) => sum + Number(a.balance_primary ?? a.current_balance), 0,
   )
+  // A foreign account without a real FX rate is summed at its native amount,
+  // so the headline total is an estimate; say so instead of hiding it (#1165).
+  const availableBalanceHasFxFallback = availableBalanceAccounts.some((a) => a.fx_fallback)
   const sortedAvailableBalanceAccounts = useMemo(
     () => sortAccountsByAbsoluteBalance(availableBalanceAccounts, (a) => a.balance_primary ?? a.current_balance),
     [availableBalanceAccounts],
@@ -462,9 +465,13 @@ export default function DashboardPage() {
         // need the actual/forecast split, while `projected_total` is the
         // user-visible all-in amount.
         const actual = s.projected_total
+        // Net money back (a reimbursement landing after the spend) is shown,
+        // but it is not spending, so it gets no month-over-month change or
+        // budget bar.
+        const moneyBack = actual < 0
         const prevAmount = budget ? Number(budget.projected_prev_month_amount) : 0
         let momPct: number | null = null
-        if (prevAmount > 0) {
+        if (!moneyBack && prevAmount > 0) {
           momPct = ((actual - prevAmount) / prevAmount) * 100
         } else if (actual > 0) {
           momPct = 100
@@ -475,6 +482,7 @@ export default function DashboardPage() {
           category_icon: s.category_icon,
           category_color: s.category_color,
           actual,
+          moneyBack,
           budget_amount: budget ? Number(budget.budget_amount) : null,
           percentage_used: budget?.percentage_used ?? null,
           momPct,
@@ -680,6 +688,13 @@ export default function DashboardPage() {
               <p className={`text-3xl font-bold tabular-nums leading-tight ${availableBalance < 0 ? 'text-rose-500' : 'text-foreground'}`}>
                 {mask(formatCurrency(availableBalance, primaryCurrency, locale))}
               </p>
+              {/* Visible text, not a hover title, so touch users can read it. */}
+              {availableBalanceHasFxFallback && (
+                <p className="flex items-start gap-1.5 mt-1 text-xs text-amber-700 dark:text-amber-400">
+                  <AlertCircle size={14} className="mt-0.5 shrink-0" />
+                  <span>{t('transactions.fxFallbackBanner')}</span>
+                </p>
+              )}
               {sortedAvailableBalanceAccounts.length > 0 && (
                 <div className="flex flex-wrap gap-1.5 mt-3">
                   {sortedAvailableBalanceAccounts.map((acc) => {
@@ -745,7 +760,7 @@ export default function DashboardPage() {
             onClick={() => setDrillDown({
               title: t('dashboard.drillDownIncome', { month: monthLabelStr }),
               sort: 'amount',
-              type: 'credit',
+              pnl_group: 'income',
               from: monthStart,
               to: monthEnd,
             })}
@@ -774,7 +789,7 @@ export default function DashboardPage() {
             onClick={() => setDrillDown({
               title: t('dashboard.drillDownExpenses', { month: monthLabelStr }),
               sort: 'amount',
-              type: 'debit',
+              pnl_group: 'expenses',
               from: monthStart,
               to: monthEnd,
             })}
@@ -936,7 +951,7 @@ export default function DashboardPage() {
             ) : mergedCategories.length > 0 ? (
               <div className="space-y-1.5">
                 {mergedCategories.map((item) => {
-                  const hasBudget = item.budget_amount != null && item.budget_amount > 0
+                  const hasBudget = !item.moneyBack && item.budget_amount != null && item.budget_amount > 0
                   const pct = item.percentage_used
                   const barColor = hasBudget
                     ? pct! > 100 ? 'bg-rose-500' : pct! >= 80 ? 'bg-amber-400' : 'bg-emerald-500'
@@ -949,7 +964,7 @@ export default function DashboardPage() {
                       onClick={() => setDrillDown({
                         title: t('dashboard.drillDownCategory', { category: item.category_name, month: monthLabelStr }),
                         category_id: item.category_id,
-                        type: 'debit',
+                        pnl_group: 'expenses',
                         from: monthStart,
                         to: monthEnd,
                       })}
@@ -960,7 +975,7 @@ export default function DashboardPage() {
                           <div className="flex items-center justify-between gap-2 mb-1">
                             <span className="text-sm font-semibold text-foreground truncate">{item.category_name}</span>
                             <div className="flex items-center gap-2 shrink-0">
-                              <span className="text-sm font-bold tabular-nums text-foreground">{mask(formatCurrency(item.actual, userCurrency, locale))}</span>
+                              <span className={`text-sm font-bold tabular-nums ${item.moneyBack ? 'text-emerald-600' : 'text-foreground'}`}>{mask(formatCurrency(item.actual, userCurrency, locale))}</span>
                               {item.momPct !== null && (
                                 <span className={`inline-flex items-center px-1.5 py-0.5 rounded-full text-[10px] font-bold tabular-nums ${
                                   item.momPct > 0 ? 'bg-rose-100 text-rose-600 dark:bg-rose-500/20 dark:text-rose-400' : item.momPct < 0 ? 'bg-emerald-100 text-emerald-600 dark:bg-emerald-500/20 dark:text-emerald-400' : 'bg-muted text-muted-foreground'
@@ -984,6 +999,9 @@ export default function DashboardPage() {
                                 {mask(t('dashboard.ofBudget', { budget: formatCurrency(item.budget_amount!, userCurrency, locale) }))}
                               </span>
                             </div>
+                          )}
+                          {item.moneyBack && (
+                            <p className="text-[11px] text-muted-foreground">{t('dashboard.categoryMoneyBack')}</p>
                           )}
                         </div>
                       </div>

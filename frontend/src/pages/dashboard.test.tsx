@@ -120,6 +120,36 @@ beforeEach(() => {
   api.payees.list.mockResolvedValue([])
 })
 
+describe('Dashboard spending by category', () => {
+  it('shows a category that netted to money back as a negative, money-in amount', async () => {
+    api.dashboard.spendingByCategory.mockResolvedValue([
+      { category_id: 'groceries', category_name: 'Groceries', category_icon: 'tag', category_color: '#000000', total: 100, projected_total: 100, percentage: 100 },
+      { category_id: 'dining', category_name: 'Dining', category_icon: 'tag', category_color: '#000000', total: -30, projected_total: -30, percentage: 0 },
+    ])
+    api.budgets.comparison.mockResolvedValue([
+      { category_id: 'dining', budget_amount: 200, percentage_used: 0, projected_prev_month_amount: 80 },
+    ])
+
+    renderWithProviders(
+      <TooltipProvider delayDuration={0}>
+        <DashboardPage />
+      </TooltipProvider>,
+    )
+
+    const refundAmount = await screen.findByText(formatCurrency(-30, 'USD', 'en-US'))
+    expect(refundAmount).toHaveClass('text-emerald-600')
+    const refundRow = refundAmount.closest('.rounded-lg') as HTMLElement
+    expect(within(refundRow).getByText(t('dashboard.categoryMoneyBack'))).toBeInTheDocument()
+    expect(within(refundRow).queryByText(/%/)).not.toBeInTheDocument()
+    expect(within(refundRow).queryByText(/200/)).not.toBeInTheDocument()
+
+    const spendAmount = screen.getByText(formatCurrency(100, 'USD', 'en-US'))
+    expect(spendAmount).not.toHaveClass('text-emerald-600')
+    const spendRow = spendAmount.closest('.rounded-lg') as HTMLElement
+    expect(within(spendRow).queryByText(t('dashboard.categoryMoneyBack'))).not.toBeInTheDocument()
+  })
+})
+
 describe('Dashboard net worth breakdown', () => {
   it('counts a shared credit line once in the credit card total', async () => {
     const { user } = renderWithProviders(
@@ -134,5 +164,32 @@ describe('Dashboard net worth breakdown', () => {
     const tooltip = await screen.findByRole('tooltip')
     const cardRow = within(tooltip).getByText(t('dashboard.creditCardBalance')).parentElement!
     expect(cardRow).toHaveTextContent(formatCurrency(-500, 'USD', 'en-US'))
+  })
+})
+
+describe('Dashboard available balance without an FX rate', () => {
+  const renderDashboard = () => renderWithProviders(
+    <TooltipProvider delayDuration={0}>
+      <DashboardPage />
+    </TooltipProvider>,
+  )
+
+  it('shows an unconverted account in its own currency and flags the total', async () => {
+    api.accounts.list.mockResolvedValue([
+      account({ id: 'checking', name: 'Checking', current_balance: 1000 }),
+      account({ id: 'eur', name: 'Euro Savings', type: 'savings', currency: 'EUR', current_balance: 100, fx_fallback: true }),
+    ])
+    renderDashboard()
+
+    const chip = (await screen.findByText('Euro Savings')).closest('a')!
+    expect(chip).toHaveTextContent(formatCurrency(100, 'EUR', 'en-US'))
+    expect(screen.getByText(t('transactions.fxFallbackBanner'))).toBeInTheDocument()
+  })
+
+  it('does not flag the total when every account is converted', async () => {
+    renderDashboard()
+
+    await screen.findByText('Checking')
+    expect(screen.queryByText(t('transactions.fxFallbackBanner'))).not.toBeInTheDocument()
   })
 })

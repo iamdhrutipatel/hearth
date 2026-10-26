@@ -49,6 +49,9 @@ describe('resolveDisplayLocale', () => {
     expect(resolveDisplayLocale('auto', 'JPY')).toBe('ja-JP')
     expect(resolveDisplayLocale('auto', 'INR')).toBe('en-IN')
     expect(resolveDisplayLocale('auto', 'RSD')).toBe('sr-RS')
+    expect(resolveDisplayLocale('auto', 'MKD')).toBe('mk-MK')
+    expect(resolveDisplayLocale('auto', 'HKD')).toBe('zh-HK')
+    expect(resolveDisplayLocale('auto', 'TWD')).toBe('zh-TW')
   })
 
   it('treats a missing number format like auto', () => {
@@ -245,6 +248,12 @@ describe('formatAmountInput', () => {
   it('honours the fraction-digit cap', () => {
     expect(formatAmountInput(1 / 3, 'en-US', 6)).toBe('0.333333')
     expect(formatAmountInput(2, 'en-US')).toBe('2')
+  })
+
+  it('pads to a fraction-digit floor in the locale separator', () => {
+    expect(formatAmountInput(10.6, 'en-US', 2, 2)).toBe('10.60')
+    expect(formatAmountInput(31.7, 'de-DE', 2, 2)).toBe('31,70')
+    expect(formatAmountInput(80, 'en-US', 2, 2)).toBe('80.00')
   })
 
   it('falls back to a dot format on a malformed locale', () => {

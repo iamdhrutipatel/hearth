@@ -8,7 +8,7 @@ import uuid
 from datetime import date
 from typing import Optional
 
-from sqlalchemy import and_, case, exists, func, not_, or_, select
+from sqlalchemy import Numeric, and_, case, exists, func, not_, or_, select, type_coerce
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -17,50 +17,149 @@ from app.models.account import Account
 from app.models.asset import Asset
 from app.models.category import Category
 from app.models.transaction import Transaction
+from app.models.transaction_reimbursement import TransactionReimbursement
 from app.services.transaction_semantics import (
+    TransactionEntity,
     credit_card_payment_filter,
     credit_card_refund_filter,
 )
 
 
-def has_valid_transfer_pair():
+def has_valid_transfer_pair(entity: TransactionEntity = Transaction):
     """SQL predicate requiring a second transaction with the same pair id."""
     counterpart = aliased(Transaction)
     return and_(
-        Transaction.transfer_pair_id.is_not(None),
+        entity.transfer_pair_id.is_not(None),
         exists(
             select(1).where(
-                counterpart.transfer_pair_id == Transaction.transfer_pair_id,
-                counterpart.id != Transaction.id,
+                counterpart.transfer_pair_id == entity.transfer_pair_id,
+                counterpart.id != entity.id,
             )
         ),
     )
 
 
+def _touches_reimbursement_link():
+    return or_(
+        TransactionReimbursement.reimbursement_id == Transaction.id,
+        TransactionReimbursement.expense_id == Transaction.id,
+    )
+
+
+def has_reimbursement_links():
+    """SQL predicate: the row is either side of a reimbursement link."""
+    return exists(select(1).where(_touches_reimbursement_link()))
+
+
+def reimbursement_link_side_counts(entity: TransactionEntity = Transaction):
+    """SQL predicate: a reimbursement link may count on this side of it.
+
+    A link is in effect only while both rows it joins are in user P&L
+    (ADR 0012). Otherwise one side would drop the linked amount while the
+    other, no longer reported, could not give it back, and income minus
+    expenses would move. A closed account's rows stay in period reports, so
+    closing one does not switch its links off.
+    """
+    return counts_as_user_pnl(entity)
+
+
+def reimbursement_unlinked_share():
+    """The fraction of a row that reimbursement links leave in user P&L.
+
+    A link takes its amount out of both rows it joins, each in its own month
+    and category (ADR 0012), so a row keeps `1 - linked / |amount|`, never
+    below zero. Unitless, so it scales `amount`, `amount_primary` or any
+    primary-currency expression alike.
+
+    Only links whose other row still counts are summed. The row's own
+    `counts_as_user_pnl` is not checked here: every reporting query already
+    drops a row that fails it.
+    """
+    counterpart = aliased(Transaction)
+    linked = func.sum(TransactionReimbursement.amount)
+    magnitude = func.abs(Transaction.amount)
+    # No link rows: SUM is NULL, so the ELSE yields NULL and the share is 1.
+    linked_fraction = (
+        select(case((linked >= magnitude, 1), else_=linked / magnitude))
+        .select_from(TransactionReimbursement)
+        .join(
+            counterpart,
+            or_(
+                and_(
+                    TransactionReimbursement.reimbursement_id == Transaction.id,
+                    counterpart.id == TransactionReimbursement.expense_id,
+                ),
+                and_(
+                    TransactionReimbursement.expense_id == Transaction.id,
+                    counterpart.id == TransactionReimbursement.reimbursement_id,
+                ),
+            ),
+        )
+        .where(reimbursement_link_side_counts(counterpart))
+        .correlate(Transaction)
+        .scalar_subquery()
+    )
+    # Typed as Numeric so the helpers it scales keep returning Decimals.
+    return type_coerce(1 - func.coalesce(linked_fraction, 0), Numeric())
+
+
+def spending_offset_filter():
+    """SQL predicate for a credit that gives money back on spending.
+
+    The category the user chose decides: a credit filed under any category
+    not flagged `is_income` (a refund, an employer reimbursement, a friend
+    paying back their half) nets against that category. Uncategorized credits
+    have no such signal, so only card refunds offset; the rest stay income.
+    """
+    return and_(
+        Transaction.type == "credit",
+        ~credit_card_payment_filter(),
+        or_(
+            # The IS NOT NULL guard keeps this two-valued: a bare NULL IN (...)
+            # is NULL, and negating it would drop the credit from income too.
+            and_(
+                Transaction.category_id.is_not(None),
+                Transaction.category_id.in_(
+                    select(Category.id).where(Category.is_income.is_(False))
+                ),
+            ),
+            and_(Transaction.category_id.is_(None), credit_card_refund_filter()),
+        ),
+    )
+
+
 def user_pnl_income_amount(amount_expr):
-    """Income amount with card refunds kept out of income."""
+    """Income amount, leaving out credits that offset spending and the part
+    of a credit linked to the expenses it repays."""
     return case(
         (
-            and_(Transaction.type == "credit", ~credit_card_refund_filter()),
-            func.abs(amount_expr),
+            and_(Transaction.type == "credit", ~spending_offset_filter()),
+            func.abs(amount_expr) * reimbursement_unlinked_share(),
         ),
         else_=0,
     )
 
 
 def user_pnl_expense_amount(amount_expr):
-    """Expense amount with card refunds reducing, rather than inflating, spend."""
+    """Expense amount, with spending offsets reducing rather than inflating it
+    and reimbursement links taken out of both the expense and the credit."""
     return case(
-        (Transaction.type == "debit", func.abs(amount_expr)),
-        (credit_card_refund_filter(), -func.abs(amount_expr)),
+        (
+            Transaction.type == "debit",
+            func.abs(amount_expr) * reimbursement_unlinked_share(),
+        ),
+        (
+            spending_offset_filter(),
+            -func.abs(amount_expr) * reimbursement_unlinked_share(),
+        ),
         else_=0,
     )
 
 
 def user_pnl_group():
-    """Map refund credits into the expense group for category reporting."""
+    """Map spending-offset credits into the expense group for category reporting."""
     return case(
-        (credit_card_refund_filter(), "expenses"),
+        (spending_offset_filter(), "expenses"),
         (Transaction.type == "credit", "income"),
         else_="expenses",
     )
@@ -184,7 +283,7 @@ def is_transfer():
     )
 
 
-def counts_as_pnl():
+def counts_as_pnl(entity: TransactionEntity = Transaction):
     """SQL filter: True when a transaction should contribute to income/expense totals.
 
     Excludes:
@@ -203,26 +302,26 @@ def counts_as_pnl():
     exclusion family so both rules stay visible at each call site.
     """
     return and_(
-        not_(has_valid_transfer_pair()),
-        Transaction.is_ignored.is_(False),
-        not_(credit_card_payment_filter()),
-        Transaction.exclude_from_pnl.is_(False),
+        not_(has_valid_transfer_pair(entity)),
+        entity.is_ignored.is_(False),
+        not_(credit_card_payment_filter(entity)),
+        entity.exclude_from_pnl.is_(False),
         # Settlement *debits* are repayments of debts that were already
         # booked as an expense via the share. Counting them would
         # double-count. Settlement *credits*, however, represent the
         # receiver actually getting the cash back — they offset the
         # over-recorded expense from when the receiver paid the full
         # parent transaction. So we keep credits, drop debits.
-        ~and_(Transaction.source == "settlement", Transaction.type == "debit"),
+        ~and_(entity.source == "settlement", entity.type == "debit"),
         or_(
-            Transaction.category_id.is_(None),
+            entity.category_id.is_(None),
             and_(
-                Transaction.category_id.not_in(
+                entity.category_id.not_in(
                     select(Category.id).where(Category.is_ignored.is_(True))
                 ),
                 or_(
-                    credit_card_refund_filter(),
-                    Transaction.category_id.not_in(
+                    credit_card_refund_filter(entity),
+                    entity.category_id.not_in(
                         select(Category.id).where(
                             Category.treat_as_transfer.is_(True)
                         )
@@ -288,7 +387,7 @@ def counts_on_bill():
     )
 
 
-def counts_as_user_pnl():
+def counts_as_user_pnl(entity: TransactionEntity = Transaction):
     """SQL filter for *user-level* P/L (dashboard, reports, budgets).
 
     Stricter than `counts_as_pnl`: also drops settlement *credits*. Under
@@ -298,8 +397,8 @@ def counts_as_user_pnl():
     track real cash through the account, not user P/L.
     """
     return and_(
-        counts_as_pnl(),
-        Transaction.source != "settlement",
+        counts_as_pnl(entity),
+        entity.source != "settlement",
     )
 
 
@@ -317,7 +416,12 @@ async def owner_split_offset_pnl(
     from the owner's full-amount aggregations so only their own share
     remains. We sum every split share that belongs to a non-owner
     member; subtracting that from the parent's full amount leaves the
-    owner's share."""
+    owner's share.
+
+    A share is classified exactly as its parent is, so the others' part
+    of a refund on a shared expense is a *negative* expense offset: the
+    parent nets the whole refund against spending, and subtracting this
+    leaves the owner netting only their own part of it."""
     from app.models.group import Group, GroupMember
     from app.models.transaction_split import TransactionSplit
 
@@ -342,19 +446,10 @@ async def owner_split_offset_pnl(
     result = await session.execute(
         select(
             Transaction.currency,
-            func.sum(
-                case(
-                    (Transaction.type == "credit", TransactionSplit.share_amount),
-                    else_=0,
-                )
-            ),
-            func.sum(
-                case(
-                    (Transaction.type == "debit", TransactionSplit.share_amount),
-                    else_=0,
-                )
-            ),
+            func.sum(user_pnl_income_amount(TransactionSplit.share_amount)),
+            func.sum(user_pnl_expense_amount(TransactionSplit.share_amount)),
         )
+        .select_from(TransactionSplit)
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
             Transaction.user_id == user_id,
@@ -412,8 +507,10 @@ async def owner_split_offset_by_category(
     workspace_id: Optional[uuid.UUID] = None,
     posted_only: bool = True,
 ) -> dict:
-    """Per-category, sum of non-owner shares on owner-side debit splits —
-    subtract from full owner debits to get the owner's category share."""
+    """Per-category expense offset from non-owner shares, signed like
+    `owner_split_offset_pnl`'s: debits add, spending-offset credits
+    subtract. Subtract it from the category's net spending to get the
+    owner's share."""
     from app.models.group import Group, GroupMember
     from app.models.transaction_split import TransactionSplit
 
@@ -436,8 +533,9 @@ async def owner_split_offset_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(TransactionSplit.share_amount),
+            func.sum(user_pnl_expense_amount(TransactionSplit.share_amount)),
         )
+        .select_from(TransactionSplit)
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
             Transaction.user_id == user_id,
@@ -446,7 +544,7 @@ async def owner_split_offset_by_category(
                 if workspace_id is not None
                 else []
             ),
-            Transaction.type == "debit",
+            user_pnl_group() == "expenses",
             TransactionSplit.group_member_id.notin_(viewer_member_ids),
             Transaction.source != "opening_balance",
             *(
@@ -493,6 +591,8 @@ async def viewer_shared_pnl(
 
     Concert tickets paid by a friend show up as the viewer's share in
     their own spending picture — without inflating account balances.
+    Shares follow the parent's classification, so the viewer's part of a
+    refund on that expense comes back as negative expense, not income.
 
     When `primary_currency` is given, mixed-currency shares are
     converted to that currency via the FX service. Otherwise, sums
@@ -518,19 +618,10 @@ async def viewer_shared_pnl(
     result = await session.execute(
         select(
             Transaction.currency,
-            func.sum(
-                case(
-                    (Transaction.type == "credit", TransactionSplit.share_amount),
-                    else_=0,
-                )
-            ),
-            func.sum(
-                case(
-                    (Transaction.type == "debit", TransactionSplit.share_amount),
-                    else_=0,
-                )
-            ),
+            func.sum(user_pnl_income_amount(TransactionSplit.share_amount)),
+            func.sum(user_pnl_expense_amount(TransactionSplit.share_amount)),
         )
+        .select_from(TransactionSplit)
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
             TransactionSplit.group_member_id.in_(member_ids),
@@ -588,7 +679,8 @@ async def viewer_shared_spending_by_category(
     posted_only: bool = True,
 ) -> dict:
     """Return {category_id (uuid|None): total_share_expense_float} for
-    transactions where the viewer participates via a group split.
+    transactions where the viewer participates via a group split. A share
+    of a spending-offset credit counts negative, as in `viewer_shared_pnl`.
 
     With `primary_currency`, totals are FX-converted; otherwise raw
     nominal sums (single-currency only)."""
@@ -612,13 +704,14 @@ async def viewer_shared_spending_by_category(
         select(
             Transaction.category_id,
             Transaction.currency,
-            func.sum(TransactionSplit.share_amount),
+            func.sum(user_pnl_expense_amount(TransactionSplit.share_amount)),
         )
+        .select_from(TransactionSplit)
         .join(Transaction, TransactionSplit.transaction_id == Transaction.id)
         .where(
             TransactionSplit.group_member_id.in_(member_ids),
             Transaction.user_id != user_id,
-            Transaction.type == "debit",
+            user_pnl_group() == "expenses",
             Transaction.source != "opening_balance",
             *(
                 [Transaction.status == "posted", date_col <= app_today()]
