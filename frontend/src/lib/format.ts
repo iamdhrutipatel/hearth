@@ -81,6 +81,9 @@ const CURRENCY_LOCALE: Record<string, string> = {
   QAR: 'en-QA',
   JMD: 'en-JM',
   RSD: 'sr-RS',
+  MKD: 'mk-MK',
+  HKD: 'zh-HK',
+  TWD: 'zh-TW',
 }
 
 /**
@@ -268,10 +271,12 @@ export function formatAmountInput(
   value: number,
   locale = 'en-US',
   maximumFractionDigits = 2,
+  minimumFractionDigits = 0,
 ): string {
   try {
     return new Intl.NumberFormat(locale, {
       useGrouping: false,
+      minimumFractionDigits,
       maximumFractionDigits,
     }).format(value)
   } catch {

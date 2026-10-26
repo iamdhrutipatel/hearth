@@ -2,7 +2,7 @@ import re
 import uuid
 from datetime import date
 from decimal import Decimal
-from typing import Optional, cast
+from typing import Literal, Optional, cast
 
 from sqlalchemy import CursorResult, case, delete, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -16,24 +16,29 @@ from app.models.category import Category
 from app.models.group import Group, GroupMember
 from app.models.payee import Payee
 from app.schemas.transaction import (
+    DescriptionSuggestion,
     InstallmentSeriesCreate,
     TransactionCreate,
     TransactionUpdate,
     TransferCreate,
 )
 from app.schemas.transaction_split import TransactionSplitInput, TransactionSplitsInput
-from app.services import reconciliation_service, split_service
+from app.services import reconciliation_service, reimbursement_service, split_service
+from app.services.account_service import get_account, get_running_balances
 from app.services.credit_card_service import apply_effective_date
 from app.services.rule_service import apply_rules_to_transaction
 from app.services.fx_rate_service import stamp_primary_amount, convert as fx_convert
 from app.services._query_filters import (
     counts_as_user_pnl,
+    has_reimbursement_links,
     is_not_ignored,
     is_transfer,
     reporting_date_col,
+    user_pnl_expense_amount,
+    user_pnl_group,
+    user_pnl_income_amount,
 )
 from app.services.recurring_transaction_service import _advance_date
-from app.services.transaction_semantics import credit_card_refund_filter
 
 
 async def _ensure_category_in_workspace(
@@ -130,13 +135,21 @@ async def get_transactions(
     status: Optional[str] = None,
     include_summary: bool = False,
     user_pnl_only: bool = False,
+    pnl_group: Optional[Literal["income", "expenses"]] = None,
     exclude_ignored: bool = False,
+    include_running_balance: bool = False,
+    primary_currency: Optional[str] = None,
 ) -> tuple[list[Transaction], int, Optional[dict]]:
     """List transactions for a workspace.
 
     `workspace_id` scopes the tenant (which transactions are visible). `user_id`
     is the *viewer* — used for Splitwise projection (linked-member visibility,
     is-shared tagging) which is identity-based, not tenancy-based.
+
+    `include_running_balance` fills `running_balance` (and, for an account in a
+    currency other than `primary_currency`, `running_balance_primary`) when the
+    list is one non-credit-card account's ledger from `from_date` in the default
+    order; see `_running_balance_account`.
     """
     # In "accrual" mode, bucket/order by effective_date so list filters
     # line up with the cash-flow view used by the dashboard and reports.
@@ -264,7 +277,11 @@ async def get_transactions(
     if exclude_transfers:
         base_query = base_query.where(Transaction.transfer_pair_id.is_(None))
     if user_pnl_only:
-        base_query = base_query.where(Account.is_closed == False, counts_as_user_pnl())
+        # Closed accounts are not excluded here: their history stays in the
+        # period totals this list drills into (issue #1112).
+        base_query = base_query.where(counts_as_user_pnl())
+    if pnl_group:
+        base_query = base_query.where(user_pnl_group() == pnl_group)
     if exclude_ignored:
         # Only drops rows; the summary below keeps computing over the same
         # filtered set, so the totals a hidden list shows stay the totals of
@@ -429,38 +446,20 @@ async def get_transactions(
         # transfers, `treat_as_transfer` categories (transfers, investments,
         # custom) and ignored items are kept OUT of income/expense.
         pnl_filter = counts_as_user_pnl()
+        amount_norm = func.coalesce(Transaction.amount_primary, Transaction.amount)
         pnl_subq = (
-            base_query.add_columns(credit_card_refund_filter().label("is_card_refund"))
+            base_query.add_columns(
+                user_pnl_income_amount(amount_norm).label("pnl_income"),
+                user_pnl_expense_amount(amount_norm).label("pnl_expense"),
+            )
             .where(pnl_filter)
             .subquery()
         )
-        amount_norm = func.coalesce(pnl_subq.c.amount_primary, pnl_subq.c.amount)
         summary_row = (
             await session.execute(
                 select(
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (
-                                    (pnl_subq.c.type == "credit")
-                                    & ~pnl_subq.c.is_card_refund,
-                                    func.abs(amount_norm),
-                                ),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ),
-                    func.coalesce(
-                        func.sum(
-                            case(
-                                (pnl_subq.c.type == "debit", func.abs(amount_norm)),
-                                (pnl_subq.c.is_card_refund, -func.abs(amount_norm)),
-                                else_=0,
-                            )
-                        ),
-                        0,
-                    ),
+                    func.coalesce(func.sum(pnl_subq.c.pnl_income), 0),
+                    func.coalesce(func.sum(pnl_subq.c.pnl_expense), 0),
                 )
             )
         ).one()
@@ -512,13 +511,20 @@ async def get_transactions(
     }
     chosen_col = sort_columns.get(sort_by) if sort_by else None
     if chosen_col is None:
-        # Default: by date desc, with created_at as tiebreaker.
-        query = base_query.order_by(default_order_col.desc(), Transaction.created_at.desc())
+        # Default: by date desc, with created_at as tiebreaker. id comes last
+        # because a bank sync inserts its whole batch in one database
+        # transaction, so those rows share created_at; without a unique key
+        # the order between pages is undefined and rows repeat or vanish.
+        query = base_query.order_by(
+            default_order_col.desc(), Transaction.created_at.desc(), Transaction.id.desc()
+        )
     else:
         direction = (chosen_col.asc() if sort_dir == "asc" else chosen_col.desc())
         # Always tie-break on date desc + created_at desc so equal values
         # stay in a sensible order (e.g. multiple txs with the same amount).
-        query = base_query.order_by(direction, default_order_col.desc(), Transaction.created_at.desc())
+        query = base_query.order_by(
+            direction, default_order_col.desc(), Transaction.created_at.desc(), Transaction.id.desc()
+        )
     if not skip_pagination:
         query = query.offset((page - 1) * limit).limit(limit)
 
@@ -549,7 +555,59 @@ async def get_transactions(
         # and the frontend needs `is_shared` to lock them from edits.
         await _tag_shared_view(session, transactions, user_id)
 
+        if include_running_balance and from_date and primary_currency:
+            running_account = await _running_balance_account(
+                session, workspace_id,
+                account_ids=account_ids or ([account_id] if account_id else []),
+                narrowed=any((
+                    category_id, category_ids, payee_id, search, uncategorized,
+                    txn_type, tags, status, currency, account_types, transaction_ids,
+                    min_amount is not None, max_amount is not None,
+                    exclude_transfers, user_pnl_only, pnl_group, exclude_ignored,
+                    group_id, bill_id, unbilled_only,
+                    # Without the opening row the walk misses its amount
+                    # whenever it falls inside the range.
+                    not include_opening_balance,
+                )),
+                default_order=not sort_by or (sort_by == "date" and sort_dir == "desc"),
+            )
+            if running_account is not None:
+                balances = await get_running_balances(
+                    session, running_account,
+                    filtered_ids=select(base_query.subquery().c.id),
+                    order_col=default_order_col,
+                    date_from=from_date,
+                    row_ids=[tx.id for tx in transactions],
+                    primary_currency=primary_currency,
+                )
+                for tx in transactions:
+                    # A row deleted between the page query and the window
+                    # query has no balance; leave it null rather than fail.
+                    tx.running_balance, tx.running_balance_primary = balances.get(tx.id, (None, None))
+
     return transactions, total or 0, summary
+
+
+async def _running_balance_account(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    account_ids: list[uuid.UUID],
+    narrowed: bool,
+    default_order: bool,
+) -> Optional[Account]:
+    """The account whose running balance the list can carry, if any (#1202).
+
+    A running balance only means something on one account's full ledger read
+    newest first: a filter would skip rows the balance moved by, another order
+    would show values out of sequence. A card's balance is the bill cycle, which
+    the account page walks itself. Anything else gets no value, not an error.
+    """
+    if narrowed or not default_order or len(set(account_ids)) != 1:
+        return None
+    account = await get_account(session, account_ids[0], workspace_id)
+    if account is None or account.type == "credit_card":
+        return None
+    return account
 
 
 async def _tag_shared_view(
@@ -1039,6 +1097,8 @@ async def get_transfer_candidates(
         return []
     if anchor.transfer_pair_id is not None:
         return []
+    if await reimbursement_service.linked_totals(session, [anchor.id]):
+        return []
 
     opposing_type = "credit" if anchor.type == "debit" else "debit"
     from_date = anchor.date - timedelta(days=window_days)
@@ -1055,6 +1115,7 @@ async def get_transfer_candidates(
             Transaction.source != "opening_balance",
             Transaction.date >= from_date,
             Transaction.date <= to_date,
+            ~has_reimbursement_links(),
         )
         .options(
             selectinload(Transaction.category),
@@ -1170,6 +1231,12 @@ async def link_existing_as_transfer(
     for tx in txns:
         if tx.transfer_pair_id is not None:
             raise ValueError("Transaction is already part of a transfer")
+    await reimbursement_service.ensure_unlinked(
+        session,
+        [tx.id for tx in txns],
+        "One of these transactions is linked as a reimbursement. Remove its "
+        "reimbursement links before marking it as a transfer.",
+    )
 
     if txns[0].account_id == txns[1].account_id:
         raise ValueError("Transactions must be in different accounts")
@@ -1213,6 +1280,12 @@ async def create_transfer_counterpart(
         raise ValueError("Transaction not found")
     if anchor.transfer_pair_id is not None:
         raise ValueError("Transaction is already part of a transfer")
+    await reimbursement_service.ensure_unlinked(
+        session,
+        [anchor.id],
+        "This transaction is linked as a reimbursement. Remove its reimbursement "
+        "links before marking it as a transfer.",
+    )
     if anchor.account_id == to_account_id:
         raise ValueError("Counterpart must be in a different account")
 
@@ -1422,6 +1495,8 @@ async def _apply_update_to_row(
     paths behave identically (FX restamp, bill re-link, transfer cascade,
     splits replacement).
     """
+    await reimbursement_service.ensure_update_keeps_links(session, tx, update_data)
+
     has_fx_override = "amount_primary" in update_data or "fx_rate_used" in update_data
     override_amount_primary = update_data.get("amount_primary")
     override_fx_rate = update_data.get("fx_rate_used")
@@ -1774,7 +1849,8 @@ async def bulk_add_to_group(
 
     Conservative semantics (issue #156): transactions that are transfers
     or already have splits are skipped — never overwritten — so the
-    operation can't destroy prior splitting work.
+    operation can't destroy prior splitting work. Rows linked as
+    reimbursements are skipped too: a row is split or reimbursed, not both.
     """
     if share_type not in ("equal", "percent"):
         raise ValueError(
@@ -1836,11 +1912,15 @@ async def bulk_add_to_group(
         .options(selectinload(Transaction.splits))
     )
     txs = txs_result.scalars().all()
+    await reimbursement_service.lock_rows(session, [tx.id for tx in txs])
+    reimbursement_linked = await reimbursement_service.linked_totals(
+        session, [tx.id for tx in txs]
+    )
 
     updated = 0
     skipped = 0
     for tx in txs:
-        if tx.transfer_pair_id is not None or tx.splits:
+        if tx.transfer_pair_id is not None or tx.splits or tx.id in reimbursement_linked:
             skipped += 1
             continue
         await split_service.replace_splits(session, tx, payload, user_id)
@@ -1982,3 +2062,102 @@ async def bulk_delete_transactions(
     )
     await session.commit()
     return len(valid_ids)
+
+
+async def suggest_descriptions(
+    session: AsyncSession,
+    workspace_id: uuid.UUID,
+    query: str,
+    limit: int = 8,
+) -> list[DescriptionSuggestion]:
+    """Distinct descriptions in the workspace that contain ``query``.
+
+    Powers the description autocomplete in the transaction form (issue
+    #1127). Each suggestion carries the category and payee of the most
+    recent transaction with that description, so picking one can prefill
+    them. Matching is case-insensitive; descriptions that *start* with the
+    query rank before ones that merely contain it, newest first otherwise.
+    """
+    term = query.strip()
+    if len(term) < 2:
+        return []
+    escaped = term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    filters = (
+        Transaction.workspace_id == workspace_id,
+        Transaction.source != "opening_balance",
+        Transaction.is_ignored.is_(False),
+        Transaction.description.ilike(f"%{escaped}%", escape="\\"),
+    )
+    # Distinct and ranked in SQL *before* the limit, so many recent rows of
+    # one description can't push an older prefix match out of the results.
+    prefix_rank = func.min(
+        case((Transaction.description.ilike(f"{escaped}%", escape="\\"), 0), else_=1)
+    )
+    # Headroom over `limit` for spellings that differ only by case or
+    # surrounding spaces, which collapse into one suggestion below.
+    candidates = (
+        await session.execute(
+            select(Transaction.description)
+            .where(*filters)
+            .group_by(Transaction.description)
+            .order_by(prefix_rank, func.max(Transaction.date).desc(), Transaction.description)
+            .limit(limit * 4)
+        )
+    ).scalars().all()
+
+    chosen: dict[str, str] = {}  # casefolded key -> displayed description
+    spellings: dict[str, list[str]] = {}
+    for description in candidates:
+        key = description.strip().casefold()
+        if not key:
+            continue
+        if key not in chosen:
+            if len(chosen) == limit:
+                continue
+            chosen[key] = description.strip()
+        spellings.setdefault(key, []).append(description)
+    if not chosen:
+        return []
+
+    # Category and payee from the latest use of each chosen description: one
+    # row per spelling (ranked in SQL), however often it was used.
+    recency = (
+        func.row_number()
+        .over(
+            partition_by=Transaction.description,
+            order_by=(Transaction.date.desc(), Transaction.created_at.desc()),
+        )
+        .label("recency")
+    )
+    newest = (
+        select(
+            Transaction.description,
+            Transaction.category_id,
+            Transaction.payee_id,
+            Transaction.date,
+            Transaction.created_at,
+            recency,
+        )
+        .where(
+            *filters[:3],
+            Transaction.description.in_([d for k in chosen for d in spellings[k]]),
+        )
+        .subquery()
+    )
+    rows = await session.execute(
+        select(newest.c.description, newest.c.category_id, newest.c.payee_id)
+        .where(newest.c.recency == 1)
+        .order_by(newest.c.date.desc(), newest.c.created_at.desc())
+    )
+    latest: dict[str, tuple[Optional[uuid.UUID], Optional[uuid.UUID]]] = {}
+    for description, category_id, payee_id in rows:
+        latest.setdefault(description.strip().casefold(), (category_id, payee_id))
+
+    return [
+        DescriptionSuggestion(
+            description=display,
+            category_id=latest.get(key, (None, None))[0],
+            payee_id=latest.get(key, (None, None))[1],
+        )
+        for key, display in chosen.items()
+    ]
